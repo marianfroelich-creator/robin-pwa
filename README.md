@@ -1,8 +1,11 @@
 # Robin — PWA Preview
 
-A static-site packaging of the Robin prototype so you can install it on your iPhone via "Add to Home Screen."
+The Robin prototype, packaged so you can install it on your iPhone via "Add to Home Screen."
 
-This is **for previewing the design on a real device.** No backend, no database, no API keys. The chat screen won't reach Claude (CORS will block it from a static site), but every other screen works.
+This now includes:
+- A working chat (via a serverless proxy to Anthropic)
+- Voice + text input that works on every screen with inputs (Home, Lists, List Detail, Calendar)
+- Optional Apple Action Button hand-off (double-press → dictate → Robin captures it)
 
 ---
 
@@ -10,98 +13,114 @@ This is **for previewing the design on a real device.** No backend, no database,
 
 ```
 robin-pwa/
-├── index.html                  ← entry point (loads React + Babel + RobinApp.jsx)
-├── RobinApp.jsx                ← the prototype itself
-├── manifest.json               ← tells iOS/Android the app name, colors, icons
-├── vercel.json                 ← serves .jsx files correctly
-├── apple-touch-icon.png        ← 180×180, used by iOS home screen
-├── icon-192.png                ← 192×192, Android home screen
-├── icon-512.png                ← 512×512, PWA standard
-└── icon-512-maskable.png       ← 512×512 with safe padding (for round / squircle masks)
+├── index.html
+├── RobinApp.jsx
+├── manifest.json
+├── vercel.json
+├── api/
+│   └── claude.js               ← serverless proxy (gives chat the API key, server-side)
+├── apple-touch-icon.png
+├── icon-192.png
+├── icon-512.png
+└── icon-512-maskable.png
 ```
 
 ---
 
-## Deploy in three steps (about 10 minutes)
+## Three things to set up (about 15 minutes total)
 
-### Step 1 — Create a new GitHub repo
+### 1. Deploy to Vercel (5 minutes)
 
-Go to **[github.com/new](https://github.com/new)** (signed in as marianfroelich-creator).
+GitHub: go to **[github.com/new](https://github.com/new)**, create a private repo called `robin-pwa`, click "upload an existing file", drag everything from this folder in (including the `api` subfolder), commit.
 
-- **Repository name:** `robin-pwa`
-- **Visibility:** Private is fine. (Public is also fine — the PWA has no secrets.)
-- Leave everything else unchecked.
-- Click **Create repository.**
+Vercel: go to **[vercel.com/new](https://vercel.com/new)**, import the `robin-pwa` repo, leave all defaults, click Deploy. Wait ~30 seconds. Note the URL (e.g. `robin-pwa-xyz.vercel.app`).
 
-On the next page you'll see a "…or upload an existing file" link. Click it.
+### 2. Add your API key so chat works (3 minutes)
 
-Drag every file from this `robin-pwa` folder into the upload area:
+This is the same pattern as AssistMe — the key lives on the server, never in the code.
 
-- `index.html`
-- `RobinApp.jsx`
-- `manifest.json`
-- `vercel.json`
-- `apple-touch-icon.png`
-- `icon-192.png`
-- `icon-512.png`
-- `icon-512-maskable.png`
+1. In Vercel, open the `robin-pwa` project.
+2. Click **Settings** → **Environment Variables**.
+3. Add a new variable:
+   - **Name:** `ANTHROPIC_API_KEY`
+   - **Value:** your Anthropic key (starts with `sk-ant-`) — same key you used for AssistMe
+   - **Environments:** check all three (Production, Preview, Development)
+4. Click **Save**.
+5. Go to the **Deployments** tab, click the three dots on the most recent deploy → **Redeploy**. (Env vars only take effect on a fresh deploy.)
 
-Commit message: `Initial PWA upload.` Click **Commit changes.**
+Chat will now work.
 
-### Step 2 — Connect Vercel to the new repo
+### 3. Install on your iPhone (2 minutes)
 
-Go to **[vercel.com/new](https://vercel.com/new)** (signed in with your usual account).
+Open the Vercel URL **in Safari** (Chrome on iOS can't install PWAs properly).
 
-- Find **robin-pwa** in the list of GitHub repos. Click **Import.**
-- On the configure screen, **leave every setting at its default.** No framework preset, no build command, no environment variables.
-- Click **Deploy.**
+1. Tap the **Share** button (square with the arrow).
+2. Tap **Add to Home Screen.**
+3. Tap **Add.**
 
-Wait ~30 seconds. Vercel will give you a URL like `robin-pwa-xyz.vercel.app`.
-
-### Step 3 — Install on your iPhone
-
-Open the Vercel URL **in Safari** (not Chrome — Chrome on iOS doesn't support home-screen install properly).
-
-1. Tap the **Share** button (square with the arrow, bottom of the screen).
-2. Scroll down. Tap **Add to Home Screen.**
-3. The name will pre-fill as "Robin." Tap **Add.**
-
-Robin now lives on your home screen. Tap the icon — it launches full-screen, no Safari address bar, no browser chrome. Feels like a real app.
+Robin lives on your home screen now. Tap it — full-screen, no Safari chrome.
 
 ---
 
-## What works and what doesn't on the phone preview
+## Setting up the Action Button (optional, ~5 minutes)
+
+For iPhone 15 Pro / 15 Pro Max / 16 Pro and newer. Double-press the side button → dictate → Robin captures it as a todo.
+
+(If you don't have an Action Button, you can still trigger the Shortcut from the Shortcuts app, the Lock Screen, or set it up as a Back Tap gesture — same Shortcut, different launch point.)
+
+**Step 1 — Build the Shortcut**
+
+Open the **Shortcuts** app on your iPhone. Tap **+** in the top right to create a new shortcut. Name it `Tell Robin`.
+
+Add these three actions in order (search for them in the action library at the bottom):
+
+1. **Dictate Text** — leave language as English, leave "Stop Listening" as "After Pause"
+2. **URL Encode** — tap the input field, set it to the result of "Dictated Text"
+3. **Open URLs** — set the URL to `https://YOUR-ROBIN-URL.vercel.app/?add=[URL Encoded Text]` (the `[URL Encoded Text]` part is inserted by tapping the variable chip; the rest you type)
+
+Tap **Done.**
+
+Quick test: tap the Shortcut to run it, speak something like "Pick up Mira at 4", and Robin should open with that line added to your todos plus a brief "Added: …" confirmation at the top.
+
+**Step 2 — Assign to Action Button**
+
+iPhone **Settings** → **Action Button** → swipe to **Shortcut** → tap **Choose a Shortcut** → pick **Tell Robin**.
+
+Done. Press-and-hold the side button, speak your thought, release. Robin captures it.
+
+---
+
+## What works and what doesn't
 
 **Works:**
-- All visual design, navigation, screens
-- Voice mic (on Home and List Detail) — Safari supports the Web Speech API
-- Briefing playback (text-to-speech with a British voice)
-- Weather (real, fetched from Open-Meteo via your phone's location)
-- Adding to-dos, checking them off, navigating between screens
+- Every screen, the whole visual design, navigation
+- Chat (via the serverless proxy)
+- Voice mic on Home, Lists, List Detail, and Calendar — tap, speak, pause ~2 seconds, auto-commits
+- Typing + Enter on the same four screens
+- Briefing playback (text-to-speech)
+- Live weather (Open-Meteo from your phone's location)
+- Action Button hand-off (if set up)
 
-**Won't work on the static preview:**
-- The Chat screen (calling Claude directly from a static page gets blocked by CORS). It'll just sit silent or show an error. This is expected — Nate's full deployment with the API proxy will fix it.
+**Limitations to know about:**
+- The Action Button currently always adds to your **Today todos**. We can teach it to route to events/lists later once you've used it a week and seen the patterns.
+- New lists and new events live in the app's memory only — they're gone if you close and reopen the PWA. (Persistence comes when we add Supabase, same as AssistMe.)
 
 ---
 
 ## Updating the prototype later
 
-When you want to push a new version:
+Edit `RobinApp.jsx` directly in the GitHub web UI, commit, Vercel auto-deploys in ~30 seconds, pull-to-refresh on your phone.
 
-1. In the GitHub repo, click on `RobinApp.jsx`.
-2. Click the pencil icon (top right) to edit.
-3. Paste the new file contents over the old.
-4. Scroll down, commit the change.
-
-Vercel will auto-deploy within ~30 seconds. Pull-to-refresh on your phone and you'll see the update.
+Updating the API proxy: edit `api/claude.js` the same way.
 
 ---
 
-## A note on the chat feature
+## A few troubleshooting notes
 
-If you eventually want chat to work on the phone preview too, the cleanest path is:
+**Chat says "Server missing ANTHROPIC_API_KEY":** the env var wasn't added or you didn't redeploy after adding it. Repeat step 2 above.
 
-1. Add a single Vercel serverless function at `/api/claude.js` that proxies requests to Anthropic with an API key stored as a Vercel environment variable.
-2. Update `RobinApp.jsx` so the Chat screen posts to `/api/claude` instead of `https://api.anthropic.com/...` directly.
+**Voice mic does nothing on first tap:** iOS Safari asks for mic permission the first time. Tap **Allow** in the popup, then tap the mic again.
 
-That's roughly the same pattern Nate set up for AssistMe, so the work is mostly portable. Worth doing later — not necessary for previewing the design.
+**The PWA opens in Safari instead of full-screen:** you opened a non-root URL (one with `?add=...` from the Shortcut). That's a known iOS quirk. The Shortcut still works — the text still gets added — it just renders inside Safari instead of in the PWA frame. Common fix: pull down to refresh once and Safari hands off to the PWA on next launch.
+
+**Want chat to work offline / faster:** that's the path to a "real" PWA with a service worker. Not necessary for previewing the design. Happy to add later.

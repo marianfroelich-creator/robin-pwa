@@ -7,7 +7,7 @@ const { useState, useEffect, useRef } = React;
 
 const F   = "'IBM Plex Mono', monospace";
 const INK = "#141414";
-const MUT = "#6b6b6b";
+const MUT = "rgba(20,20,20,0.7)";
 const DIM = "#8c8c8c";
 const BDR = "#d9d9d9";
 const WHT = "#ffffff";
@@ -68,7 +68,7 @@ const NavIcon = ({id}) => {
 // ─── SHARED ──────────────────────────────────────────────────
 const StatusBar = ({time="7:42"}) => (
   <div style={{position:"relative",height:44,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 24px",flexShrink:0}}>
-    <span style={s(13)}>{time}</span>
+    <span style={s(15)}>{time}</span>
     <div style={{position:"absolute",left:"50%",transform:"translateX(-50%)",width:80,height:24,background:INK,borderRadius:12}}/>
     <div style={{display:"flex",gap:8}}>{[0,1,2].map(i=><div key={i} style={{width:4,height:4,background:INK,borderRadius:"50%"}}/>)}</div>
   </div>
@@ -94,8 +94,8 @@ const Eyebrow = ({children}) => (
 // All primary tabs: ScreenHeader at marginTop:18 below StatusBar.
 const ScreenHeader = ({title, subhead, withBack=false}) => (
   <div style={{padding:"0 20px",marginTop:withBack?8:18,marginBottom:18}}>
-    <h1 style={{...s(32,INK,"200",-0.7),margin:0}}>{title}</h1>
-    {subhead&&<p style={{...s(13,MUT),margin:"8px 0 0",lineHeight:1.5}}>{subhead}</p>}
+    <h1 style={{...s(32,INK,"300",-3.7),margin:0}}>{title}</h1>
+    {subhead&&<p style={{...s(15,MUT),margin:"8px 0 0",lineHeight:1.5}}>{subhead}</p>}
   </div>
 );
 
@@ -132,6 +132,7 @@ const Toggle = ({options, value, onChange}) => (
 );
 
 // ─── useMic — reusable voice-input hook (Web Speech API) ───
+// "Magical" mode: tap to start, speak, pause ~2 seconds → auto-commits the transcript.
 // Pass a callback that receives the recognized transcript text.
 // Returns { onMicClick, isRecording, micStatus, micMsg } to wire into BottomNav.
 const useMic = (onTranscript) => {
@@ -139,21 +140,33 @@ const useMic = (onTranscript) => {
   const [micStatus, setMicStatus] = useState("idle");
   const [micMsg, setMicMsg] = useState("");
   const recognitionRef = useRef(null);
+  const silenceTimerRef = useRef(null);
+  const transcriptRef = useRef("");
+  const committedRef = useRef(false);
 
   const showMicMsg = (msg, d=3000) => {
     setMicMsg(msg); setMicStatus("error");
     setTimeout(()=>{setMicMsg(""); setMicStatus("idle");}, d);
   };
 
-  const onMicClick = async () => {
-    if (isRecording) {
-      recognitionRef.current?.stop();
-      setIsRecording(false); setMicStatus("idle");
-      return;
+  const stopAndCommit = () => {
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    if (recognitionRef.current && !committedRef.current) {
+      committedRef.current = true;
+      try { recognitionRef.current.stop(); } catch {}
     }
+  };
+
+  const resetSilenceTimer = () => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = setTimeout(stopAndCommit, 2000);
+  };
+
+  const onMicClick = async () => {
+    if (isRecording) { stopAndCommit(); return; }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { showMicMsg("Needs Chrome or Edge"); return; }
-    setMicStatus("requesting"); setMicMsg("Requesting mic…");
+    setMicStatus("requesting"); setMicMsg("Listening…");
     try {
       const st = await navigator.mediaDevices.getUserMedia({audio: true});
       st.getTracks().forEach(t => t.stop());
@@ -162,17 +175,38 @@ const useMic = (onTranscript) => {
       return;
     }
     const r = new SR();
-    r.lang = "en-US"; r.interimResults = false; r.maxAlternatives = 1;
-    r.onstart = () => { setIsRecording(true); setMicStatus("recording"); setMicMsg(""); };
-    r.onend   = () => { setIsRecording(false); setMicStatus("idle"); setMicMsg(""); };
+    r.lang = "en-US";
+    r.interimResults = true;   // stream partials so we can detect activity
+    r.continuous = true;        // we control stopping via silence timer
+    r.maxAlternatives = 1;
+    transcriptRef.current = "";
+    committedRef.current = false;
+    r.onstart = () => {
+      setIsRecording(true); setMicStatus("recording"); setMicMsg("");
+      resetSilenceTimer();
+    };
+    r.onend = () => {
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+      setIsRecording(false); setMicStatus("idle"); setMicMsg("");
+      const txt = transcriptRef.current.trim();
+      if (txt) onTranscript(txt);
+    };
     r.onerror = e => {
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
       setIsRecording(false);
       const m = {["not-allowed"]:"Mic blocked",["no-speech"]:"Nothing heard — try again",["aborted"]:""}[e.error] ?? `Error: ${e.error}`;
-      if(m) showMicMsg(m); else { setMicMsg(""); setMicStatus("idle"); }
+      if (m) showMicMsg(m); else { setMicMsg(""); setMicStatus("idle"); }
     };
     r.onresult = e => {
-      const tx = e.results[0][0].transcript.trim();
-      if(tx) onTranscript(tx);
+      // Accumulate everything (final + interim) into the running transcript
+      let finalText = "", interimText = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t;
+        else interimText += t;
+      }
+      transcriptRef.current = (finalText + interimText).trim();
+      resetSilenceTimer();
     };
     recognitionRef.current = r;
     try { r.start(); } catch { showMicMsg("Couldn't start — try again"); }
@@ -241,7 +275,7 @@ const BackNav = ({nav, to}) => (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M10 3L5 8L10 13" stroke={INK} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
-    <span style={{...s(14,INK,"500"),cursor:"pointer"}} onClick={()=>nav(to)}>Back</span>
+    <span style={{...s(15,INK,"500"),cursor:"pointer"}} onClick={()=>nav(to)}>Back</span>
   </div>
 );
 
@@ -256,10 +290,10 @@ const BottomNav = ({active, nav, inputValue, onInputChange, onInputSubmit, onMic
       <div style={{margin:"14px 24px 10px",display:"flex",gap:12}}>
         {isLive?(
           <input value={inputValue} onChange={e=>onInputChange(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onInputSubmit&&onInputSubmit()} placeholder={ph}
-            style={{flex:1,height:44,border:`.5px solid ${border}`,borderRadius:22,padding:"0 20px",fontFamily:F,fontSize:14,color:INK,background:GROUND,outline:"none",transition:"border-color .2s"}}/>
+            style={{flex:1,height:44,border:`.5px solid ${border}`,borderRadius:22,padding:"0 20px",fontFamily:F,fontSize:15,color:INK,background:GROUND,outline:"none",transition:"border-color .2s"}}/>
         ):(
           <div style={{flex:1,height:44,border:`.5px solid ${EGG_BDR}`,borderRadius:22,display:"flex",alignItems:"center",padding:"0 20px",background:GROUND}}>
-            <span style={s(14,MUT)}>{placeholder}</span>
+            <span style={s(15,MUT)}>{placeholder}</span>
           </div>
         )}
         <button onClick={onMicClick||onInputSubmit} style={{width:44,height:44,background:isRecording?EGG:GROUND,border:`.5px solid ${EGG}`,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0,transition:"background .2s"}}>
@@ -288,7 +322,7 @@ const ChatBar = ({nav, active, inputValue, onInputChange, onSend, loading}) => {
     <div style={{position:"absolute",bottom:0,left:0,right:0,height:132,background:GROUND,borderTop:`.5px solid ${EGG_BDR}`}}>
       <div style={{margin:"14px 24px 10px",display:"flex",gap:12}}>
         <input value={inputValue} onChange={e=>onInputChange(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onSend()} placeholder="Message Robin…"
-          style={{flex:1,height:44,border:`.5px solid ${EGG_BDR}`,borderRadius:22,padding:"0 20px",fontFamily:F,fontSize:14,color:INK,background:GROUND,outline:"none"}}/>
+          style={{flex:1,height:44,border:`.5px solid ${EGG_BDR}`,borderRadius:22,padding:"0 20px",fontFamily:F,fontSize:15,color:INK,background:GROUND,outline:"none"}}/>
         <button onClick={onSend} disabled={loading}
           style={{width:44,height:44,background:GROUND,border:`1px solid ${EGG}`,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:loading?"default":"pointer",flexShrink:0,opacity:loading?.5:1}}>
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke={INK} strokeWidth="1.5" strokeLinecap="round">
@@ -352,7 +386,7 @@ const Splash = ({nav}) => (
         </div>
         <div className="robin-caret"/>
       </div>
-      <p className="robin-tagline-anim" style={s(14,INK)}>A serious tool.</p>
+      <p className="robin-tagline-anim" style={s(15,INK)}>A serious tool.</p>
     </div>
     <div style={{padding:"0 20px 64px"}}>
       <OutlinePill onClick={()=>nav("signin")}>Get started →</OutlinePill>
@@ -367,10 +401,10 @@ const SignIn = ({nav}) => (
       <ScreenHeader title="Sign In" subhead="Choose your preferred sign-in method."/>
     </div>
     <div style={{padding:"6px 20px 0",display:"flex",flexDirection:"column",gap:14}}>
-      <button onClick={()=>nav("goals")} style={{width:"100%",height:52,borderRadius:26,background:GROUND,border:`1.75px solid ${EGG}`,display:"flex",alignItems:"center",justifyContent:"center",gap:12,fontFamily:F,fontSize:14,color:INK,cursor:"pointer"}}>
+      <button onClick={()=>nav("goals")} style={{width:"100%",height:52,borderRadius:26,background:GROUND,border:`1.75px solid ${EGG}`,display:"flex",alignItems:"center",justifyContent:"center",gap:12,fontFamily:F,fontSize:15,color:INK,cursor:"pointer"}}>
         <GoogleLogo/> Sign in with Google
       </button>
-      <button onClick={()=>nav("goals")} style={{width:"100%",height:52,borderRadius:26,background:GROUND,border:`1.75px solid ${EGG}`,display:"flex",alignItems:"center",justifyContent:"center",gap:12,fontFamily:F,fontSize:14,color:INK,cursor:"pointer"}}>
+      <button onClick={()=>nav("goals")} style={{width:"100%",height:52,borderRadius:26,background:GROUND,border:`1.75px solid ${EGG}`,display:"flex",alignItems:"center",justifyContent:"center",gap:12,fontFamily:F,fontSize:15,color:INK,cursor:"pointer"}}>
         <AppleLogo color={INK}/> Sign in with Apple
       </button>
       <button onClick={()=>nav("goals")} style={{background:"none",border:"none",fontFamily:F,fontSize:11,color:MUT,letterSpacing:".88px",textTransform:"uppercase",cursor:"pointer",marginTop:8}}>Continue as Guest</button>
@@ -391,7 +425,7 @@ const Goals = ({nav}) => {
       <StatusBar/>
       <div style={{paddingTop:75}}>
         <div style={{padding:"0 20px"}}>
-          <p style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>Setup · 1 of 4</p>
+          <p style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>Setup · 1 of 4</p>
         </div>
         <ScreenHeader title="How can Robin help?"/>
       </div>
@@ -403,7 +437,7 @@ const Goals = ({nav}) => {
               style={{width:"100%",minHeight:60,borderRadius:4,padding:"14px 18px",
                 background:on?EGG:GROUND,
                 border:`.5px solid ${on?EGG:EGG_BDR}`,
-                color:INK,fontFamily:F,fontSize:14,cursor:"pointer",
+                color:INK,fontFamily:F,fontSize:15,cursor:"pointer",
                 display:"flex",alignItems:"center",justifyContent:"space-between",gap:14,
                 transition:"background .15s, border-color .15s"}}>
               <span style={{textAlign:"left",flex:1,lineHeight:1.35}}>{label}</span>
@@ -428,14 +462,14 @@ const RobinsHoursSetup = ({nav}) => {
       <StatusBar/>
       <div style={{paddingTop:75}}>
         <div style={{padding:"0 20px"}}>
-          <p style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>Setup · 3 of 4</p>
+          <p style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>Setup · 3 of 4</p>
         </div>
         <ScreenHeader title="Robin's Hours" subhead="Tell Robin what you need and when."/>
       </div>
       <Panel mt={0}>
         {[["Morning Brief","morning"],["Evening Recap","evening"],["Quiet Hours","quiet"]].map(([lbl,key],i)=>(
           <div key={key} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"15px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-            <span style={s(14)}>{lbl}</span>
+            <span style={s(15)}>{lbl}</span>
             {editing===key&&key!=="quiet"?(
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <input type="time" defaultValue={times[key]||"07:00"} onChange={e=>setTimes(p=>({...p,[key]:e.target.value}))}
@@ -443,7 +477,7 @@ const RobinsHoursSetup = ({nav}) => {
                 <button onClick={()=>setEditing(null)} style={{fontFamily:F,fontSize:11,color:GRN,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>Done</button>
               </div>
             ):(
-              <span style={{...s(13,MUT),cursor:"pointer"}} onClick={()=>setEditing(key)}>
+              <span style={{...s(15,MUT),cursor:"pointer"}} onClick={()=>setEditing(key)}>
                 {key==="quiet"?"10 PM – 7 AM":fmt(times[key])} ›
               </span>
             )}
@@ -464,7 +498,7 @@ const NotificationsIntro = ({nav}) => {
     <StatusBar/>
     <div style={{paddingTop:75}}>
       <div style={{padding:"0 20px"}}>
-        <p style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>Notifications · 4 of 4</p>
+        <p style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>Notifications · 4 of 4</p>
       </div>
       <ScreenHeader title="Nudges" subhead="Allow notifications so Robin can nudge you at the right moment."/>
     </div>
@@ -524,7 +558,7 @@ const Loading = ({nav}) => {
       <Panel mt={0}>
         {items.map((item,i)=>(
           <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-            <span style={s(14)}>{item}</span>
+            <span style={s(15)}>{item}</span>
             {i<done
               ?<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill={INK}/><path d="M7 12.5l3.5 3.5L17 9" stroke={WHT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
               :<span style={s(18,MUT)}>…</span>}
@@ -536,11 +570,21 @@ const Loading = ({nav}) => {
 };
 
 // ─── HOME ────────────────────────────────────────────────────
-const Home = ({nav}) => {
+const Home = ({nav, pendingAdd, onPendingConsumed}) => {
   const [todos,setTodos]=useState([{id:1,text:"Schedule Wu-Wu's vet visit",done:false},{id:2,text:"Willa's permission slip",done:false}]);
   const [newItem,setNewItem]=useState("");
   const [weather,setWeather]=useState(null);
   const [isPlaying,setIsPlaying]=useState(false);
+
+  // Action Button hand-off: if the router queued an item (from the iOS Shortcut
+  // double-tap), add it to todos and let the router know we consumed it.
+  useEffect(()=>{
+    if (pendingAdd) {
+      setTodos(p => [...p, {id: Date.now(), text: pendingAdd, done: false}]);
+      onPendingConsumed?.();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[pendingAdd]);
 
   useEffect(()=>{
     const load=async(lat,lon)=>{
@@ -612,7 +656,7 @@ const Home = ({nav}) => {
         <Panel mt={14}>
           {/* Top row: weather (left) + rotated date (right) */}
           <div style={{padding:"13px 14px 0",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-            <span style={{...s(10,INK,"500",1),textTransform:"uppercase",marginTop:2}}>
+            <span style={{...s(11,INK,"500",1),textTransform:"uppercase",marginTop:2}}>
               {weather?`H${weather.high}°\u00A0 L${weather.low}°\u00A0\u00A0${weather.condition.toUpperCase()}`:"Loading weather…"}
             </span>
             <div style={{width:28,height:70,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:-2}}>
@@ -621,19 +665,19 @@ const Home = ({nav}) => {
           </div>
           {/* Day name (own line) ; then caption + play pill on shared baseline */}
           <div style={{padding:"0 14px 14px",marginTop:-8}}>
-            <div style={{fontFamily:F,fontSize:32,fontWeight:200,color:INK,letterSpacing:"-.5px"}}>{dayName}</div>
+            <div style={{fontFamily:F,fontSize:32,fontWeight:300,color:INK,letterSpacing:"-3.5px"}}>{dayName}</div>
             <div style={{display:"flex",alignItems:"center",gap:12,marginTop:8}}>
               <div style={{...s(12,MUT,"500",1.4),textTransform:"uppercase"}}>{captionDate}</div>
               <button onClick={toggleBriefing} style={{height:25,border:`1px solid ${isPlaying?EGG:EGG}`,borderRadius:13,padding:"0 12px 0 10px",display:"inline-flex",alignItems:"center",gap:6,cursor:"pointer",background:isPlaying?EGG:GROUND,fontFamily:F,transition:"background .2s"}}>
                 {isPlaying?<svg width="9" height="10" viewBox="0 0 8 9" fill={INK}><rect x=".5" y=".5" width="2.5" height="8" rx=".5"/><rect x="5" y=".5" width="2.5" height="8" rx=".5"/></svg>:<svg width="8" height="9" viewBox="0 0 7 8" fill={EGG}><path d="M0.5 0.5L6.5 4L0.5 7.5Z"/></svg>}
-                <span style={{...s(10,INK,"500",.7)}}>{isPlaying?"STOP":"0:30"}</span>
+                <span style={{...s(11,INK,"500",.7)}}>{isPlaying?"STOP":"0:30"}</span>
               </button>
             </div>
           </div>
           <PanelHR/>
           {/* Briefing — readable body */}
           <div style={{padding:"14px 14px 16px"}}>
-            <p style={{...s(14),lineHeight:1.6,margin:0}}>Good morning, Marian. Three things need your attention. Maria call 10am — following up on the brief. Call Dad at 5; tee time at 6. Wu-Wu's vet still needs scheduling.</p>
+            <p style={{...s(15),lineHeight:1.6,margin:0}}>Good morning, Marian. Three things need your attention. Maria call 10am — following up on the brief. Call Dad at 5; tee time at 6. Wu-Wu's vet still needs scheduling.</p>
           </div>
         </Panel>
 
@@ -643,7 +687,7 @@ const Home = ({nav}) => {
           {[{t:"10am",e:"Maria call"},{t:"5pm",e:"Call Dad"},{t:"6pm",e:"Tee time"}].map(({t:time,e})=>(
             <div key={e} style={{display:"flex",alignItems:"center",gap:14,padding:"11px 14px",borderTop:`.5px solid ${EGG_DIV}`}}>
               <span style={{...s(12,MUT),width:42,flexShrink:0}}>{time}</span>
-              <span style={{...s(14),flex:1}}>{e}</span>
+              <span style={{...s(15),flex:1}}>{e}</span>
               <ItemIcon type={iconFor(e)} size={13} color={INK}/>
             </div>
           ))}
@@ -657,7 +701,7 @@ const Home = ({nav}) => {
               <div style={{width:17,height:17,borderRadius:"50%",flexShrink:0,border:`1px solid ${todo.done?INK:EGG}`,background:todo.done?INK:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
                 {todo.done&&<svg width="9" height="9" viewBox="0 0 8 8" fill="none"><path d="M1 4L3 6L7 2" stroke={WHT} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>}
               </div>
-              <span style={{...s(14,todo.done?MUT:INK),textDecoration:todo.done?"line-through":"none",transition:"color .15s",flex:1}}>{todo.text}</span>
+              <span style={{...s(15,todo.done?MUT:INK),textDecoration:todo.done?"line-through":"none",transition:"color .15s",flex:1}}>{todo.text}</span>
               <ItemIcon type={iconFor(todo.text)} size={13} color={INK}/>
             </div>
           ))}
@@ -680,16 +724,36 @@ const LISTS_DATA=[
   {id:6,title:"School bag · Mira",category:"todo",items:["Bug spray","Rain jacket","Sleeping bag","Water bottle","Flashlight","Extra socks"]},
 ];
 
-const ListsGrid = ({nav, setSelectedList, listsShared, setListsShared}) => {
+const ListsGrid = ({nav, setSelectedList, listsShared, setListsShared, lists, setLists}) => {
   const [view,setView]=useState("grid");
-  const left=LISTS_DATA.filter((_,i)=>i%2===0);
-  const right=LISTS_DATA.filter((_,i)=>i%2===1);
+  const [newListInput,setNewListInput]=useState("");
+  const left=lists.filter((_,i)=>i%2===0);
+  const right=lists.filter((_,i)=>i%2===1);
+
+  // Create a new (empty) list from typed or spoken text — title becomes the new list's name.
+  const addNewList = (title) => {
+    const t = (title || "").trim();
+    if (!t) return;
+    const newList = {
+      id: Date.now(),
+      title: t,
+      category: "todo",
+      items: [],
+    };
+    setLists(p => [...p, newList]);
+    setNewListInput("");
+  };
+  const onInputSubmit = () => addNewList(newListInput);
+  // Voice → new list (same behavior as typing + Enter)
+  const {onMicClick: micFn, isRecording, micStatus, micMsg} = useMic(tx => addNewList(tx));
+  const onMicClick = () => { if (newListInput.trim()) { onInputSubmit(); return; } micFn(); };
+
   const Card=({list})=>{
     const shared=listsShared[list.id];
     return (
     <div onClick={()=>{setSelectedList(list);nav("list-detail");}} style={{background:GROUND,border:`.5px solid ${EGG_BDR}`,padding:13,cursor:"pointer"}}>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:6,marginBottom:8}}>
-        <p style={{...s(13,INK,"500"),margin:0,flex:1}}>{list.title}</p>
+        <p style={{...s(15,INK,"500"),margin:0,flex:1}}>{list.title}</p>
         {shared&&<ItemIcon type="share" size={13} color={EGG}/>}
       </div>
       {list.items.slice(0,5).map((item,i)=>(
@@ -699,6 +763,7 @@ const ListsGrid = ({nav, setSelectedList, listsShared, setListsShared}) => {
         </div>
       ))}
       {list.items.length>5&&<p style={{...s(11,MUT),marginTop:5}}>+ {list.items.length-5} more</p>}
+      {list.items.length===0&&<p style={{...s(11,MUT),marginTop:5}}>Empty — tap to add items</p>}
     </div>
     );
   };
@@ -707,7 +772,7 @@ const ListsGrid = ({nav, setSelectedList, listsShared, setListsShared}) => {
       <StatusBar time="7:42"/>
       <div style={{paddingTop:18,paddingBottom:14}}>
         <div style={{padding:"0 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h1 style={{...s(32,INK,"200",-0.7),margin:0}}>Lists</h1>
+          <h1 style={{...s(32,INK,"300",-3.7),margin:0}}>Lists</h1>
           <Toggle options={[["Grid","grid"],["List","list"]]} value={view} onChange={setView}/>
         </div>
       </div>
@@ -719,7 +784,7 @@ const ListsGrid = ({nav, setSelectedList, listsShared, setListsShared}) => {
           </div>
         ):(
           <Panel mt={0}>
-            {LISTS_DATA.map((list,i)=>{
+            {lists.map((list,i)=>{
               const shared=listsShared[list.id];
               return (
               <div key={list.id} onClick={()=>{setSelectedList(list);nav("list-detail");}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 14px",cursor:"pointer",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
@@ -737,7 +802,7 @@ const ListsGrid = ({nav, setSelectedList, listsShared, setListsShared}) => {
           </Panel>
         )}
       </div>
-      <BottomNav active="lists" nav={nav}/>
+      <BottomNav active="lists" nav={nav} inputValue={newListInput} onInputChange={setNewListInput} onInputSubmit={onInputSubmit} onMicClick={onMicClick} isRecording={isRecording} micStatus={micStatus} micMsg={micMsg} placeholder="+ New list"/>
     </div>
   );
 };
@@ -748,12 +813,12 @@ const ShareModal = ({onClose, onShare, defaultEmail}) => {
     <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"flex-end",zIndex:100}}>
       <div style={{background:GROUND,width:"100%",borderRadius:"24px 24px 0 0",padding:"0 0 32px",borderTop:`.5px solid ${EGG_BDR}`}}>
         <div style={{padding:"16px 24px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span style={s(14,INK,"500")}>Share this list</span>
+          <span style={s(15,INK,"500")}>Share this list</span>
           <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontFamily:F,fontSize:22,color:MUT}}>×</button>
         </div>
         <div style={{height:.5,background:EGG_DIV}}/>
         <div style={{padding:"16px 24px"}}>
-          <p style={{...s(13,MUT),lineHeight:1.5,margin:"0 0 12px"}}>They'll get an invite by email and can add and check off items in real time.</p>
+          <p style={{...s(15,MUT),lineHeight:1.5,margin:"0 0 12px"}}>They'll get an invite by email and can add and check off items in real time.</p>
           <input placeholder="name@example.com" value={email} onChange={e=>setEmail(e.target.value)} type="email"
             style={{width:"100%",height:48,border:`.5px solid ${EGG_BDR}`,borderRadius:8,padding:"0 14px",fontFamily:F,fontSize:14,color:INK,outline:"none",boxSizing:"border-box",marginBottom:14,background:GROUND}}/>
           <PrimaryPill onClick={()=>{if(email.trim()){onShare(email.trim());onClose();}}}>Send invite</PrimaryPill>
@@ -794,12 +859,12 @@ const ListDetail = ({nav, list, listsShared, setListsShared}) => {
       <BackNav nav={nav} to="lists"/>
       <div style={{padding:"0 20px",marginTop:8,marginBottom:18}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
-          <h1 style={{...s(32,INK,"200",-0.7),margin:0,flex:1,minWidth:0}}>{list.title}</h1>
+          <h1 style={{...s(32,INK,"300",-3.7),margin:0,flex:1,minWidth:0}}>{list.title}</h1>
           <button onClick={()=>setShowShare(true)} aria-label="Share list" style={{background:"none",border:"none",cursor:"pointer",padding:6,display:"flex",alignItems:"center",justifyContent:"center"}}>
             <ItemIcon type="share" size={20} color={sharedWith?EGG:MUT}/>
           </button>
         </div>
-        <p style={{...s(13,MUT),margin:"8px 0 0",lineHeight:1.5}}>{items.length} items · {items.filter(i=>i.done).length} done{sharedWith?` · Shared with ${sharedWith}`:""}</p>
+        <p style={{...s(15,MUT),margin:"8px 0 0",lineHeight:1.5}}>{items.length} items · {items.filter(i=>i.done).length} done{sharedWith?` · Shared with ${sharedWith}`:""}</p>
       </div>
       <div style={{overflowY:"auto",flex:1,paddingBottom:132}}>
         {isGrocery?depts.map(dept=>{
@@ -812,7 +877,7 @@ const ListDetail = ({nav, list, listsShared, setListsShared}) => {
                   <div style={{width:17,height:17,borderRadius:"50%",border:`1px solid ${item.done?INK:EGG}`,background:item.done?INK:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
                     {item.done&&<svg width="9" height="9" viewBox="0 0 8 8" fill="none"><path d="M1 4.5L3.5 7L7.5 2" stroke={WHT} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                   </div>
-                  <span style={{...s(14,item.done?MUT:INK),textDecoration:item.done?"line-through":"none"}}>{item.text}</span>
+                  <span style={{...s(15,item.done?MUT:INK),textDecoration:item.done?"line-through":"none"}}>{item.text}</span>
                 </div>
               ))}
             </Panel>
@@ -824,7 +889,7 @@ const ListDetail = ({nav, list, listsShared, setListsShared}) => {
                 <div style={{width:17,height:17,borderRadius:"50%",border:`1px solid ${item.done?INK:EGG}`,background:item.done?INK:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
                   {item.done&&<svg width="9" height="9" viewBox="0 0 8 8" fill="none"><path d="M1 4.5L3.5 7L7.5 2" stroke={WHT} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                 </div>
-                <span style={{...s(14,item.done?MUT:INK),textDecoration:item.done?"line-through":"none"}}>{item.text}</span>
+                <span style={{...s(15,item.done?MUT:INK),textDecoration:item.done?"line-through":"none"}}>{item.text}</span>
               </div>
             ))}
           </Panel>
@@ -848,7 +913,7 @@ const Chat = ({nav}) => {
     const m=input.trim();setInput("");
     setMsgs(p=>[...p,{role:"user",text:m}]);setLoading(true);
     try{
-      const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:"You are Robin, a warm smart personal assistant talking to Marian. Keep replies concise. Never mention being an AI.",messages:[...msgs,{role:"user",text:m}].map(x=>({role:x.role==="robin"?"assistant":"user",content:x.text}))})});
+      const r=await fetch("/api/claude",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:"You are Robin, a warm smart personal assistant talking to Marian. Keep replies concise. Never mention being an AI.",messages:[...msgs,{role:"user",text:m}].map(x=>({role:x.role==="robin"?"assistant":"user",content:x.text}))})});
       const d=await r.json();setMsgs(p=>[...p,{role:"robin",text:d.content?.[0]?.text||"…"}]);
     }catch{setMsgs(p=>[...p,{role:"robin",text:"Something went wrong. Try again."}]);}
     setLoading(false);
@@ -857,15 +922,15 @@ const Chat = ({nav}) => {
     <div style={{height:"100%",position:"relative",display:"flex",flexDirection:"column",background:GROUND}}>
       <StatusBar time="7:42"/>
       <div style={{textAlign:"center",paddingTop:76,paddingBottom:14}}>
-        <span style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>Robin · Online</span>
+        <span style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>Robin · Online</span>
       </div>
       <div style={{flex:1,overflowY:"auto",padding:"4px 20px",display:"flex",flexDirection:"column",gap:12,paddingBottom:148}}>
         {msgs.map((m,i)=>(
           <div key={i} style={{maxWidth:"76%",alignSelf:m.role==="robin"?"flex-start":"flex-end",background:m.role==="robin"?GROUND:INK,border:m.role==="robin"?`.5px solid ${EGG_BDR}`:"none",borderRadius:18,padding:"12px 16px"}}>
-            <p style={{...s(14,m.role==="robin"?INK:WHT),lineHeight:1.5}}>{m.text}</p>
+            <p style={{...s(15,m.role==="robin"?INK:WHT),lineHeight:1.5}}>{m.text}</p>
           </div>
         ))}
-        {loading&&<div style={{alignSelf:"flex-start",background:GROUND,border:`.5px solid ${EGG_BDR}`,borderRadius:18,padding:"12px 16px"}}><p style={s(14,MUT)}>…</p></div>}
+        {loading&&<div style={{alignSelf:"flex-start",background:GROUND,border:`.5px solid ${EGG_BDR}`,borderRadius:18,padding:"12px 16px"}}><p style={s(15,MUT)}>…</p></div>}
         <div ref={bottomRef}/>
       </div>
       <ChatBar nav={nav} active="chat" inputValue={input} onInputChange={setInput} onSend={send} loading={loading}/>
@@ -895,7 +960,7 @@ const AddEventModal = ({onClose, onAdd}) => {
     <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"flex-end",zIndex:100}}>
       <div style={{background:GROUND,width:"100%",borderRadius:"24px 24px 0 0",padding:"0 0 32px",borderTop:`.5px solid ${EGG_BDR}`}}>
         <div style={{padding:"16px 24px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span style={s(14,INK,"500")}>{mode?"Add Event":"New"}</span>
+          <span style={s(15,INK,"500")}>{mode?"Add Event":"New"}</span>
           <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontFamily:F,fontSize:22,color:MUT}}>×</button>
         </div>
         <div style={{height:.5,background:EGG_DIV}}/>
@@ -920,7 +985,7 @@ const AddEventModal = ({onClose, onAdd}) => {
           <div style={{padding:"16px 24px"}}>
             <input placeholder="Reminder title" value={title} onChange={e=>setTitle(e.target.value)} style={{width:"100%",height:44,border:`.5px solid ${EGG_BDR}`,borderRadius:8,padding:"0 14px",fontFamily:F,fontSize:13,color:INK,outline:"none",boxSizing:"border-box",marginBottom:12,background:GROUND}}/>
             <input type="time" value={time} onChange={e=>setTime(e.target.value)} style={{width:"100%",height:44,border:`.5px solid ${EGG_BDR}`,borderRadius:8,padding:"0 14px",fontFamily:F,fontSize:12,color:INK,outline:"none",boxSizing:"border-box",marginBottom:12,background:GROUND}}/>
-            <p style={{...s(10,MUT,"500",1.2),textTransform:"uppercase",marginBottom:8}}>Repeat on</p>
+            <p style={{...s(11,MUT,"500",1.2),textTransform:"uppercase",marginBottom:8}}>Repeat on</p>
             <div style={{display:"flex",gap:6,marginBottom:16}}>
               {dow.map((d,i)=>{const on=days.includes(i);return(
                 <button key={d} onClick={()=>toggleDay(i)} style={{width:36,height:36,borderRadius:18,border:`.5px solid ${on?INK:EGG_BDR}`,background:on?INK:GROUND,color:on?WHT:INK,fontFamily:F,fontSize:11,cursor:"pointer"}}>{d}</button>
@@ -934,15 +999,31 @@ const AddEventModal = ({onClose, onAdd}) => {
   );
 };
 
-const Calendar = ({nav}) => {
+const Calendar = ({nav, calendarEvents, setCalendarEvents}) => {
   const [view,setView]=useState("day");
   const [selectedDate,setSelectedDate]=useState(12);
   const [hoveredDate,setHoveredDate]=useState(null);
   const [showAddEvent,setShowAddEvent]=useState(false);
-  const [events,setEvents]=useState(EVENTS);
+  const [newEventInput,setNewEventInput]=useState("");
+  // Fall back to local state if router didn't pass shared state (back-compat).
+  const [localEvents,setLocalEvents]=useState(EVENTS);
+  const events = calendarEvents ?? localEvents;
+  const setEvents = setCalendarEvents ?? setLocalEvents;
   const monthDays=[...Array(31)].map((_,i)=>i+1);
   const paddedDays=[...Array(1).fill(null),...monthDays];
   const addEvent=ev=>{if(!ev.title?.trim())return;const d=ev.date?new Date(ev.date).getDate():selectedDate;setEvents(p=>({...p,[d]:[...(p[d]||[]),{time:ev.time||"",title:ev.title}]}));};
+
+  // Quick-add from the bottom input — typing or speaking creates an event
+  // on the currently-selected day with no time (user can edit later for precision).
+  const quickAdd = (title) => {
+    const t = (title || "").trim();
+    if (!t) return;
+    addEvent({title: t});
+    setNewEventInput("");
+  };
+  const onInputSubmit = () => quickAdd(newEventInput);
+  const {onMicClick: micFn, isRecording, micStatus, micMsg} = useMic(tx => quickAdd(tx));
+  const onMicClick = () => { if (newEventInput.trim()) { onInputSubmit(); return; } micFn(); };
   const selectedEvents=events[selectedDate]||[];
   const daysOfWeek=["M","T","W","T","F","S","S"];
   // Build the week containing the selected date (Mon-anchored)
@@ -968,18 +1049,18 @@ const Calendar = ({nav}) => {
       <StatusBar time="7:42"/>
       {/* Top eyebrow row: section indicator (left) + return-to-today (right) */}
       <div style={{padding:"18px 20px 0",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-        <span style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>{selectedDate} / Calendar</span>
+        <span style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>{selectedDate} / Calendar</span>
         <div onClick={()=>setSelectedDate(TODAY.getDate())} style={{textAlign:"right",cursor:"pointer"}}>
           <div style={{display:"flex",alignItems:"center",gap:5,justifyContent:"flex-end"}}>
             <ItemIcon type="return" size={11} color={MUT}/>
-            <span style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>Today</span>
+            <span style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>Today</span>
           </div>
-          <div style={{...s(13,INK),marginTop:2}}>{todayShort}</div>
+          <div style={{...s(15,INK),marginTop:2}}>{todayShort}</div>
         </div>
       </div>
       {/* Big weekday/month title + toggle */}
       <div style={{padding:"6px 20px 14px"}}>
-        <h1 style={{...s(40,INK,"200",-1),margin:"0 0 14px"}}>{view==="day"?selectedWeekday:"May"}</h1>
+        <h1 style={{...s(40,INK,"300",-4),margin:"0 0 14px"}}>{view==="day"?selectedWeekday:"May"}</h1>
         <Toggle options={[["Month","month"],["Day","day"]]} value={view} onChange={setView}/>
       </div>
 
@@ -987,7 +1068,7 @@ const Calendar = ({nav}) => {
         <div style={{flex:1,overflowY:"auto",paddingBottom:132}}>
           <Panel mt={0}>
             <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",textAlign:"center",padding:"14px 8px 12px"}}>
-              {daysOfWeek.map((d,i)=><span key={i} style={{...s(10,MUT,"500",1.3),textTransform:"uppercase"}}>{d}</span>)}
+              {daysOfWeek.map((d,i)=><span key={i} style={{...s(11,MUT,"500",1.3),textTransform:"uppercase"}}>{d}</span>)}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",padding:"0 8px 14px",gap:"6px 0"}}>
               {paddedDays.map((d,i)=>{
@@ -998,7 +1079,7 @@ const Calendar = ({nav}) => {
                   <div key={i} onClick={()=>setSelectedDate(d)} onMouseEnter={()=>setHoveredDate(d)} onMouseLeave={()=>setHoveredDate(null)}
                     style={{display:"flex",justifyContent:"center",cursor:"pointer",padding:"3px 0"}}>
                     <div style={{width:32,height:32,borderRadius:"50%",background:isSel?INK:isHov?"#e8e8e8":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"background .15s"}}>
-                      <span style={s(14,isSel?WHT:INK,isSel?"600":"normal")}>{d}</span>
+                      <span style={s(15,isSel?WHT:INK,isSel?"600":"normal")}>{d}</span>
                     </div>
                   </div>
                 );
@@ -1008,12 +1089,12 @@ const Calendar = ({nav}) => {
           <Panel>
             <Eyebrow>{selectedMonthDay}</Eyebrow>
             {selectedEvents.length===0
-              ?<div style={{padding:"12px 14px",borderTop:`.5px solid ${EGG_DIV}`}}><span style={s(13,MUT)}>No events for this day.</span></div>
+              ?<div style={{padding:"12px 14px",borderTop:`.5px solid ${EGG_DIV}`}}><span style={s(15,MUT)}>No events for this day.</span></div>
               :selectedEvents.map((ev,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"flex-start",gap:14,padding:"12px 14px",borderTop:`.5px solid ${EGG_DIV}`}}>
                   <span style={{...s(12,MUT),width:46,flexShrink:0,marginTop:2}}>{ev.time}</span>
                   <div style={{flex:1}}>
-                    <div style={s(14)}>{ev.title}</div>
+                    <div style={s(15)}>{ev.title}</div>
                     {ev.from&&<div style={{...s(11,MUT),marginTop:2}}>From {ev.from}</div>}
                   </div>
                   <ItemIcon type={iconFor(ev.title)} size={18} color={INK}/>
@@ -1033,7 +1114,7 @@ const Calendar = ({nav}) => {
                 const isSel=date===selectedDate&&inMonth;
                 return (
                   <div key={i} onClick={()=>date&&inMonth&&setSelectedDate(date)} style={{display:"flex",flexDirection:"column",alignItems:"center",cursor:date&&inMonth?"pointer":"default",opacity:inMonth?1:0.35}}>
-                    <span style={{...s(10,MUT,"500",1.3),textTransform:"uppercase",marginBottom:6}}>{daysOfWeek[i]}</span>
+                    <span style={{...s(11,MUT,"500",1.3),textTransform:"uppercase",marginBottom:6}}>{daysOfWeek[i]}</span>
                     {isSel?(
                       <div style={{width:34,height:46,border:`1px solid ${INK}`,borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center"}}>
                         <span style={s(18,INK,"500",-0.3)}>{date}</span>
@@ -1051,10 +1132,10 @@ const Calendar = ({nav}) => {
           <Panel>
             <Eyebrow>{selectedMonthDay}</Eyebrow>
             {selectedEvents.length===0
-              ?<div style={{padding:"14px 14px",borderTop:`.5px solid ${EGG_DIV}`}}><span style={s(13,MUT)}>No events today.</span></div>
+              ?<div style={{padding:"14px 14px",borderTop:`.5px solid ${EGG_DIV}`}}><span style={s(15,MUT)}>No events today.</span></div>
               :selectedEvents.map((ev,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"flex-start",gap:14,padding:"14px 14px",borderTop:`.5px solid ${EGG_DIV}`}}>
-                  <span style={{...s(13,MUT),width:54,flexShrink:0,marginTop:2}}>{ev.time}</span>
+                  <span style={{...s(15,MUT),width:54,flexShrink:0,marginTop:2}}>{ev.time}</span>
                   <div style={{flex:1}}>
                     <div style={s(15)}>{ev.title}</div>
                     {ev.from&&<div style={{...s(12,MUT),marginTop:3}}>From {ev.from}</div>}
@@ -1066,7 +1147,7 @@ const Calendar = ({nav}) => {
         </div>
       )}
 
-      <BottomNav active="calendar" nav={nav} placeholder="+ Add event"/>
+      <BottomNav active="calendar" nav={nav} placeholder="+ Add event" inputValue={newEventInput} onInputChange={setNewEventInput} onInputSubmit={onInputSubmit} onMicClick={onMicClick} isRecording={isRecording} micStatus={micStatus} micMsg={micMsg}/>
       {showAddEvent&&<AddEventModal onClose={()=>setShowAddEvent(false)} onAdd={addEvent}/>}
     </div>
   );
@@ -1077,7 +1158,7 @@ const SettingsRow = ({label, value, caption, to, nav, red=false, isFirst=false})
   <div onClick={()=>to&&nav(to)} style={{cursor:to?"pointer":"default",borderTop:isFirst?"none":`.5px solid ${EGG_DIV}`}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 14px"}}>
       <div>
-        <p style={{...s(14,red?RED:INK),margin:0}}>{label}</p>
+        <p style={{...s(15,red?RED:INK),margin:0}}>{label}</p>
         {value&&<p style={{...s(12,MUT),marginTop:3}}>{value}</p>}
         {caption&&<p style={{...s(11,MUT),marginTop:2,letterSpacing:".3px"}}>{caption}</p>}
       </div>
@@ -1134,7 +1215,7 @@ const SettingsProfile = ({nav}) => {
         <Panel mt={0}>
           {[["Name",name,setName],["Email",email,setEmail]].map(([lbl,val,setter],i)=>(
             <div key={lbl} style={{padding:"14px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-              <p style={{...s(10,MUT,"500",1.3),textTransform:"uppercase",margin:"0 0 6px"}}>{lbl}</p>
+              <p style={{...s(11,MUT,"500",1.3),textTransform:"uppercase",margin:"0 0 6px"}}>{lbl}</p>
               <input value={val} onChange={e=>setter(e.target.value)} style={{width:"100%",border:"none",borderBottom:`.5px solid ${EGG_DIV}`,background:"transparent",fontFamily:F,fontSize:15,color:INK,outline:"none",padding:"4px 0",boxSizing:"border-box"}}/>
             </div>
           ))}
@@ -1173,7 +1254,7 @@ const SettingsConnections = ({nav}) => {
               <div style={{display:"flex",alignItems:"center",gap:12}}>
                 <img src={c.icon} alt={c.name} width="32" height="32" style={{flexShrink:0,objectFit:"contain"}}/>
                 <div style={{flex:1,minWidth:0}}>
-                  <p style={{...s(13,INK,"500"),margin:0}}>{c.name}</p>
+                  <p style={{...s(15,INK,"500"),margin:0}}>{c.name}</p>
                   <p style={{...s(11,MUT),marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.email}</p>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
@@ -1210,7 +1291,7 @@ const SettingsHours = ({nav}) => {
         <Panel mt={0}>
           {[["Morning Brief","morning"],["Evening Recap","evening"],["Quiet Start","qstart"],["Quiet End","qend"]].map(([lbl,key],i)=>(
             <div key={key} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-              <span style={s(14)}>{lbl}</span>
+              <span style={s(15)}>{lbl}</span>
               <input type="time" value={times[key]} onChange={e=>setTimes(p=>({...p,[key]:e.target.value}))} style={{border:"none",background:"transparent",fontFamily:F,fontSize:13,color:MUT,outline:"none",cursor:"pointer"}}/>
             </div>
           ))}
@@ -1235,7 +1316,7 @@ const SettingsNotifications = ({nav}) => {
         <Panel mt={0}>
           {Object.entries(prefs).map(([k,v],i)=>(
             <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-              <span style={s(14)}>{k}</span>
+              <span style={s(15)}>{k}</span>
               <div onClick={()=>toggle(k)} style={{width:40,height:24,borderRadius:12,background:v?INK:BDR,cursor:"pointer",position:"relative",transition:"background .2s",flexShrink:0}}>
                 <div style={{position:"absolute",top:3,left:v?19:3,width:18,height:18,borderRadius:"50%",background:WHT,transition:"left .2s"}}/>
               </div>
@@ -1256,7 +1337,7 @@ const SettingsAbout = ({nav}) => (
       <Panel mt={0}>
         {[["Version","v0.3"],["Build","2025.05.01"],["Model","Claude Sonnet"],["Codebase","github.com/natescott12"]].map(([l,v],i)=>(
           <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"14px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-            <span style={s(14)}>{l}</span><span style={s(13,MUT)}>{v}</span>
+            <span style={s(15)}>{l}</span><span style={s(15,MUT)}>{v}</span>
           </div>
         ))}
       </Panel>
@@ -1276,8 +1357,8 @@ const Legal = ({nav, title, sections}) => (
       <Panel mt={0}>
         {sections.map(([lbl,body],i)=>(
           <div key={lbl} style={{padding:"14px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-            <p style={{...s(10,MUT,"500",1.3),textTransform:"uppercase",marginBottom:8}}>{lbl}</p>
-            <p style={{...s(13,MUT),lineHeight:1.65,margin:0}}>{body}</p>
+            <p style={{...s(11,MUT,"500",1.3),textTransform:"uppercase",marginBottom:8}}>{lbl}</p>
+            <p style={{...s(15,MUT),lineHeight:1.65,margin:0}}>{body}</p>
           </div>
         ))}
       </Panel>
@@ -1294,7 +1375,7 @@ const ContactUs = ({nav}) => (
       <Panel mt={0}>
         {[["General","hello@robinapp.co"],["Support","support@robinapp.co"],["Feature Ideas","robinapp.co/ideas"],["Report a Bug","github.com/robinapp"]].map(([lbl,val],i)=>(
           <div key={lbl} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 14px",borderTop:i===0?"none":`.5px solid ${EGG_DIV}`}}>
-            <div><p style={{...s(14),margin:0}}>{lbl}</p><p style={{...s(12,MUT),marginTop:3}}>{val}</p></div>
+            <div><p style={{...s(15),margin:0}}>{lbl}</p><p style={{...s(12,MUT),marginTop:3}}>{val}</p></div>
             <ChevronR/>
           </div>
         ))}
@@ -1308,7 +1389,29 @@ function RobinApp() {
   const [screen,setScreen]=useState("splash");
   const [selectedList,setSelectedList]=useState(null);
   const [listsShared,setListsShared]=useState({});
+  const [lists,setLists]=useState(LISTS_DATA);
+  const [calendarEvents,setCalendarEvents]=useState(EVENTS);
+  const [pendingHomeAdd,setPendingHomeAdd]=useState(null);
+  const [toast,setToast]=useState(null);
   const nav=to=>setScreen(to);
+
+  // ─── Action Button hand-off ───
+  // Reads ?add=<text> from the URL on first mount (delivered by the iOS
+  // Shortcut described in the README) and queues it for the Home screen.
+  // Shows a brief toast and cleans the URL so a refresh doesn't re-add.
+  useEffect(()=>{
+    const params = new URLSearchParams(window.location.search);
+    const add = params.get("add");
+    if (add && add.trim()) {
+      setPendingHomeAdd(add.trim());
+      setToast(`Added: ${add.trim()}`);
+      setTimeout(()=>setToast(null), 3500);
+      // Strip the param so a refresh doesn't replay
+      window.history.replaceState({}, "", window.location.pathname);
+      // Land on Home so the user can see what got added
+      setScreen("home");
+    }
+  },[]);
 
   // Switch-based router — one element per render, clean identity tracking
   const renderScreen=()=>{
@@ -1319,11 +1422,11 @@ function RobinApp() {
       case "robins-hours-setup":      return <RobinsHoursSetup nav={nav}/>;
       case "notifications-intro":     return <NotificationsIntro nav={nav}/>;
       case "loading":                 return <Loading nav={nav}/>;
-      case "home":                    return <Home nav={nav}/>;
-      case "lists":                   return <ListsGrid nav={nav} setSelectedList={setSelectedList} listsShared={listsShared} setListsShared={setListsShared}/>;
+      case "home":                    return <Home nav={nav} pendingAdd={pendingHomeAdd} onPendingConsumed={()=>setPendingHomeAdd(null)}/>;
+      case "lists":                   return <ListsGrid nav={nav} setSelectedList={setSelectedList} listsShared={listsShared} setListsShared={setListsShared} lists={lists} setLists={setLists}/>;
       case "list-detail":             return <ListDetail nav={nav} list={selectedList} listsShared={listsShared} setListsShared={setListsShared}/>;
       case "chat":                    return <Chat nav={nav}/>;
-      case "calendar":                return <Calendar nav={nav}/>;
+      case "calendar":                return <Calendar nav={nav} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents}/>;
       case "settings":                return <Settings nav={nav}/>;
       case "settings-profile":        return <SettingsProfile nav={nav}/>;
       case "settings-connections":    return <SettingsConnections nav={nav}/>;
@@ -1333,26 +1436,74 @@ function RobinApp() {
       case "terms":                   return <Legal nav={nav} title="Terms of Use" sections={TERMS}/>;
       case "privacy":                 return <Legal nav={nav} title="Privacy Policy" sections={PRIVACY}/>;
       case "contact":                 return <ContactUs nav={nav}/>;
-      default:                        return <Home nav={nav}/>;
+      default:                        return <Home nav={nav} pendingAdd={pendingHomeAdd} onPendingConsumed={()=>setPendingHomeAdd(null)}/>;
     }
   };
 
   return (
-    <div style={{minHeight:"100vh",display:"flex",justifyContent:"center",alignItems:"flex-start",padding:"2rem 0",background:"var(--color-background-tertiary)"}}>
+    <>
       <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@100;200;300;400;500;600;700&display=swap" rel="stylesheet"/>
-      <div style={{
-        width:393,
-        height:852,
-        borderRadius:48,
-        overflow:"hidden",
-        border:`.5px solid ${BDR}`,
-        position:"relative",
-        fontFamily:F,
-        backgroundColor:GROUND,
-        backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='g' width='10' height='10' patternUnits='userSpaceOnUse'%3E%3Cpath d='M 10 0 L 0 0 0 10' fill='none' stroke='%235BBFC7' stroke-width='0.5' stroke-opacity='0.38'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100%25' height='100%25' fill='url(%23g)'/%3E%3C/svg%3E")`,
-      }}>
-        {renderScreen()}
+      <style>{`
+        /* Default (mobile / PWA fullscreen): no frame, fills viewport */
+        .robin-outer {
+          min-height: 100dvh;
+          display: flex;
+          justify-content: center;
+          align-items: flex-start;
+          background: ${GROUND};
+          margin: 0; padding: 0;
+        }
+        .robin-phone {
+          width: 100vw;
+          min-height: 100dvh;
+          position: relative;
+          overflow: hidden;
+          font-family: ${F};
+          background-color: ${GROUND};
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='g' width='10' height='10' patternUnits='userSpaceOnUse'%3E%3Cpath d='M 10 0 L 0 0 0 10' fill='none' stroke='%235BBFC7' stroke-width='0.5' stroke-opacity='0.38'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100%25' height='100%25' fill='url(%23g)'/%3E%3C/svg%3E");
+          padding-top: env(safe-area-inset-top);
+          padding-bottom: env(safe-area-inset-bottom);
+        }
+        /* Desktop preview (wider than phone-ish): show the 393×852 phone frame */
+        @media (min-width: 480px) {
+          .robin-outer {
+            padding: 2rem 0;
+            background: var(--color-background-tertiary, #d8d8d8);
+          }
+          .robin-phone {
+            width: 393px;
+            height: 852px;
+            min-height: 0;
+            border-radius: 48px;
+            border: .5px solid ${BDR};
+            padding-top: 0;
+            padding-bottom: 0;
+          }
+        }
+        /* Toast (Action Button add confirmation) */
+        .robin-toast {
+          position: absolute;
+          left: 50%; transform: translateX(-50%);
+          top: calc(env(safe-area-inset-top) + 20px);
+          background: ${INK}; color: ${WHT};
+          padding: 12px 18px;
+          border-radius: 10px;
+          font-family: ${F};
+          font-size: 14px;
+          letter-spacing: .2px;
+          box-shadow: 0 8px 28px rgba(0,0,0,.18);
+          z-index: 9999;
+          max-width: calc(100vw - 40px);
+          animation: toast-in .3s ease-out;
+        }
+        @keyframes toast-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+      `}</style>
+      <div className="robin-outer">
+        <div className="robin-phone">
+          {renderScreen()}
+          {toast && <div className="robin-toast">{toast}</div>}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
