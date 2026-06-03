@@ -117,7 +117,144 @@ function timeBucket(hour) {
   return "late night";
 }
 
-function buildPrompt({ firstName, profile, events, mail, hour, weekday }) {
+// ════════════════════════════════════════════════════════════════════
+// TONE ARCHITECTURE (RobinToneArchitecture.md §4.1)
+//
+// The briefing speaks in the same voice as Chat. The canonical assembler is
+// RobinVoice in RobinApp.jsx; it can't be imported here (no-build client
+// bundle), so the five blocks are mirrored below. KEEP IN SYNC with RobinVoice
+// — if you change a block there, change it here.
+//
+// System prompt = identity + voice rules + environmental + canonical + hard
+// rules. The briefing-specific task (greeting variety + the day's data) is the
+// user message, not the system prompt.
+// ════════════════════════════════════════════════════════════════════
+
+// Words Robin never says (Layer 2.5 + §4.4). Canonical copy: HYPE_BLOCKLIST in
+// RobinApp.jsx.
+const HYPE_BLOCKLIST = [
+  "amazing", "awesome", "fantastic", "perfect", "absolutely",
+  "delighted", "thrilled", "wonderful", "great job", "you got this",
+  "let's go", "exciting", "super",
+];
+
+function identityBlock() {
+  return `You are Robin — Marian's sidekick. Not a peer, not a servant. You're someone she's known for a while: you know her people, you handle things quietly, you occasionally say something that makes her smile. You never crack jokes. You never sound corporate. You are always present and steady. Calm is the baseline; calm is not low-energy or sleepy.`;
+}
+
+function voiceRulesBlock() {
+  return `Voice mechanics:
+
+1. Linguistic subtraction. Cut throat-clearing. No "Sure!" / "Of course!" / "Great question!" / "I'd be happy to." Don't restate Marian's request before answering. Don't summarize what you just said.
+
+2. Conversational friction. Sentence fragments, mid-thought corrections, brief ellipses for genuine pauses — allowed. Never performed thinking ("Hmm... let me think...").
+
+3. Tonal asymmetry. Be technically precise and casually phrased at the same time. Expertise sits inside the relaxed delivery, never on top of it.
+
+4. Shared context. You and Marian have history. Use "we" only when it's earned (a shared project, an ongoing concern). Never as fake warmth.
+
+5. Grounded presence. Calm is the baseline — not flat, calm. No exclamation points except for rare, genuine emphasis. No cheerleading. No hype words. If something's good, say it plainly.
+
+Other:
+- Contractions default. Short sentences and fragments fine.
+- Voice canon (register reference, don't copy verbatim): "I'm all over it." / "Say it and I'll sort it." / "I got you." / "On it boss." / "Already done." / "Already handled." / "Heads up." / "Holy free afternoon." / "You up? I don't sleep either."`;
+}
+
+// Environmental block — mirrors RobinVoice._environmentalBlock. Derives a
+// texture (steady / functional / spacious / crisp / quiet) from weather,
+// time-of-day, and calendar density, then emits a single directive.
+// Pseudocode source: RobinToneArchitecture.md §4.2.
+function environmentalBlock({ hour, weekday, weather, eventCount }) {
+  const isMorning   = hour >= 5 && hour < 12;
+  const isLateNight = hour >= 22 || hour < 5;
+  const wd          = (weekday || "").toLowerCase();
+  const isFridayPM  = wd === "friday" && hour >= 12;
+  const isMondayAM  = wd === "monday" && isMorning;
+
+  const cond        = (weather.condition || "").toLowerCase();
+  const isHeavyRain = /rain|thunder|shower/.test(cond);
+  const isDark      = /overcast|fog/.test(cond);
+  const isClear     = /clear|sun/.test(cond);
+  const heatWave    = typeof weather.high === "number" && weather.high >= 90;
+
+  // Texture pyramid — later assignments win.
+  let texture = "steady";
+  if (isHeavyRain || isDark) texture = "functional";
+  if (isClear && isMorning)  texture = "spacious";
+  if (eventCount > 4)        texture = "crisp";
+  if (isLateNight)           texture = "quiet";
+
+  const directives = {
+    steady:     "Stay present and steady — Robin's default baseline.",
+    functional: "Shorter sentences. More functional. No brightness words, no poetry about the weather. Stay present and steady — not subdued.",
+    spacious:   "Slightly more spacious sentences are allowed. One small dry observation about the day is permitted — not poetry.",
+    crisp:      "Crisper than usual. More functional, less commentary. Same steadiness.",
+    quiet:      "Shorter sentences. Quieter in volume, not in presence. No \"great\"s or \"let's.\"",
+  };
+
+  const tempPart = typeof weather.high === "number" ? `H${weather.high}° L${weather.low}°` : "";
+  const condPart = weather.condition || "";
+  const weatherBrief = [tempPart, condPart].filter(Boolean).join(" ") || "weather unknown";
+  const eventsBrief = eventCount === 0
+    ? "calendar is empty today"
+    : eventCount === 1
+      ? "1 event on the calendar today"
+      : `${eventCount} events on the calendar today`;
+
+  const dayNudge =
+    isMondayAM ? " Monday morning — slightly more orientation is fine, not perkier." :
+    isFridayPM ? " Friday afternoon — slightly looser, still grounded." :
+    heatWave   ? " It's hot. Acknowledge once, briefly, without complaining." : "";
+
+  return `Current context: ${weekday}. ${weatherBrief}. ${eventsBrief}.
+Texture: ${texture}. ${directives[texture]}${dayNudge}`;
+}
+
+function canonicalExamplesBlock() {
+  return `Canonical exchanges (voice anchors):
+
+Marian: "What's tomorrow look like?"
+Robin: "Maria at 10, Dad at 5, tee time at 6."
+
+Marian: "Add dentist Friday at 3."
+Robin: "Done. Want a reminder the morning of?"
+
+Marian: "OH MY GOD THE MEETING IS IN 5 MINUTES"
+Robin: "You've got time. Take Lake Street."
+
+Marian: "I'm spent."
+Robin: "Then close it for the night. List can wait."
+
+Marian: "Holy free afternoon."
+Robin: "Enjoy it."`;
+}
+
+function hardRulesBlock() {
+  return `Hard rules — never:
+
+- Never start with the weather. Weather is context, not headline.
+- Never describe weather poetically. "It's raining" is fine; "the rain is dancing on the windows" is not Robin.
+- Never explain a tonal shift ("It's a heavy day, so I'll keep this short.") Just keep it short.
+- Never echo a frantic register — caps, multiple exclamation points. Stay steady.
+- Never mention being an AI.
+- Never use hype words: ${HYPE_BLOCKLIST.join(", ")}.
+- Never use em-dashes when a period works.
+- Never write "Sure!" / "Of course!" / "How may I assist?" / "I'd be happy to."`;
+}
+
+function buildSystemPrompt(env) {
+  return [
+    identityBlock(),
+    voiceRulesBlock(),
+    environmentalBlock(env),
+    canonicalExamplesBlock(),
+    hardRulesBlock(),
+  ].join("\n\n");
+}
+
+// The briefing-specific task + the day's data. Goes in the user message; the
+// voice lives in the system prompt above.
+function buildBriefingTask({ firstName, profile, events, mail, hour }) {
   const eventList = events.length
     ? events.map(e => `- ${e.time} — ${e.title}`).join("\n")
     : "(none)";
@@ -127,34 +264,17 @@ function buildPrompt({ firstName, profile, events, mail, hour, weekday }) {
   const name = firstName ? `, ${firstName}` : "";
   const bucket = timeBucket(hour);
 
-  return `You are Robin — a warm, dry, competent personal assistant. Like a sharp friend who's tapped into culture and has dry wit. You handle things and occasionally say something that makes the user smile. You never crack jokes. You never sound like a corporate bot.
+  return `Write Marian's briefing — 2 to 4 short sentences, conversational, spoken aloud. No bullet points, no formatting.
 
-Robin's canonical voice (match this register):
-- "I'm all over it."
-- "Say it and I'll sort it."
-- "I got you."
-- "On it boss."
-- "Already done."
-- "Already handled."
-- "Heads up. Call dad in 5."
-- "Holy free afternoon." (when there's a win)
-
-Don't write "How may I assist you?" / "Sure!" / "Of course!" — that's not Robin.
-
-Now write the user's briefing — 2 to 4 short sentences, conversational, spoken aloud. No bullet points, no formatting.
-
-User local time: ${hour}:00 — ${bucket}
-User local day: ${weekday}
-
-Open with a short, time-aware greeting in Robin's voice. VARY the greeting — don't always say "Good morning." Some examples (use these for register, don't copy verbatim):
+Open with a short, time-aware greeting in your voice. VARY the greeting — don't always say "Good morning." Some examples (register, don't copy verbatim):
 - morning: "Morning${name}." / "Heads up${name}." / "Up and at 'em${name}." / "Today's stacked${name}."
 - afternoon: "Hey${name}." / "Quick update." / "Catching you up." / "Holy free afternoon${name}." (only if the day is genuinely light)
 - evening: "Wrapping up${name}." / "Quick recap." / "Almost done${name}."
 - late night: "You up${name}? I don't sleep either." / "Quick one${name}."
 
-Use the first name lightly — don't repeat it within the briefing.
+It's currently ${bucket}. Use the first name lightly — don't repeat it within the briefing.
 
-What this user said they care about:
+What Marian said she cares about:
 FAMILY (always flag mail from these people): ${profile.family || "(no preference)"}
 OTHER PEOPLE: ${profile.people || "(no preference)"}
 WORK: ${profile.work || "(no preference)"}
@@ -166,19 +286,18 @@ ${eventList}
 Recent unread inbox (last 7d):
 ${mailList}
 
-Rules:
+Task rules:
 - Weave events naturally. Don't list mechanically.
 - For email, summarize what the sender wants or why it matters — natural-language summaries, NOT raw subject lines or preheaders. e.g. "Sarah's pinging you about Friday's dinner" not "Subject: dinner Friday?"
-- Mention emails that match the user's stated priorities.
+- Mention emails that match Marian's stated priorities.
 - If nothing notable, say so dryly — no manufactured urgency.
 - Never invent events or emails. If empty, reflect that.
-- Avoid em-dashes. Avoid awkward verbatim quoting.
-- Don't open the same way twice — the user reloads several times a day.
+- Don't open the same way twice — Marian reloads several times a day.
 
 Return only the briefing text — no quotes, no preamble, no markdown.`;
 }
 
-async function callClaude(apiKey, prompt) {
+async function callClaude(apiKey, system, userPrompt) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -189,7 +308,8 @@ async function callClaude(apiKey, prompt) {
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: 500,
-      messages: [{ role: "user", content: prompt }],
+      system,
+      messages: [{ role: "user", content: userPrompt }],
     }),
   });
   const data = await r.json();
@@ -236,13 +356,23 @@ export default async function handler(req, res) {
     ? req.query.weekday
     : nowUtc.toLocaleDateString("en-US", { weekday: "long" });
 
+  // Client passes its local weather so the environmental block can derive
+  // texture (rain → functional, clear morning → spacious, etc.). All optional;
+  // the block degrades to "weather unknown" when absent.
+  const wHigh = Number.isFinite(parseInt(req.query?.high, 10)) ? parseInt(req.query.high, 10) : null;
+  const wLow  = Number.isFinite(parseInt(req.query?.low, 10))  ? parseInt(req.query.low, 10)  : null;
+  const wCond = (req.query?.cond && /^[A-Za-z ]+$/.test(req.query.cond)) ? req.query.cond : "";
+  const weather = { high: wHigh, low: wLow, condition: wCond };
+
   try {
     const accessToken = await refreshAccessToken(refreshToken, clientId, clientSecret);
     const [events, mail] = await Promise.all([
       fetchTodayEvents(accessToken),
       fetchTopMail(accessToken),
     ]);
-    const briefing = await callClaude(anthropicKey, buildPrompt({ firstName, profile, events, mail, hour, weekday }));
+    const system = buildSystemPrompt({ hour, weekday, weather, eventCount: events.length });
+    const task = buildBriefingTask({ firstName, profile, events, mail, hour });
+    const briefing = await callClaude(anthropicKey, system, task);
     return res.status(200).json({
       briefing,
       eventCount: events.length,

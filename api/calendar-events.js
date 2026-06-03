@@ -108,6 +108,7 @@ export default async function handler(req, res) {
       end:   ev.end?.dateTime   || ev.end?.date   || "",
       allDay: !ev.start?.dateTime,
       location: ev.location || null,
+      htmlLink: ev.htmlLink || null,    // deep-link to view/edit in Google Calendar
     }));
     return res.status(200).json({ events });
   } catch (err) {

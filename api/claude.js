@@ -36,6 +36,8 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
+        // Enables the server-side web_search tool when callers include it in `tools`. Harmless otherwise.
+        "anthropic-beta": "web-search-2025-03-05",
       },
       body: JSON.stringify(req.body),
     });
