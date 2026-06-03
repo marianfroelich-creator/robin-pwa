@@ -9,7 +9,12 @@
 
 import crypto from "crypto";
 
-const REDIRECT_URI = "https://robin-pwa.vercel.app/api/google-auth-callback";
+// Must match the redirect_uri used in google-auth-start.js for the token
+// exchange to succeed: derive it from the domain this request came in on.
+function redirectUri(req) {
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `https://${host}/api/google-auth-callback`;
+}
 
 function sign(value, secret) {
   return crypto.createHmac("sha256", secret).update(value).digest("hex");
@@ -51,7 +56,7 @@ export default async function handler(req, res) {
         code,
         client_id: clientId,
         client_secret: clientSecret,
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: redirectUri(req),
         grant_type: "authorization_code",
       }),
     });

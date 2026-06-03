@@ -5,12 +5,20 @@
 //   GOOGLE_CLIENT_ID       — from Google Cloud Console → Credentials
 //   COOKIE_SECRET          — random 32+ char string (used to sign the state cookie)
 //
-// The redirect URI below must be registered in Google Cloud Console under
-// the OAuth 2.0 Client → Authorized redirect URIs.
+// The redirect URI is derived from the domain the request actually came in on
+// (production, or any preview alias), so OAuth completes on that same domain
+// instead of bouncing to a hardcoded host. Each domain used must still be
+// registered in Google Cloud Console → OAuth 2.0 Client → Authorized redirect URIs.
 
 import crypto from "crypto";
 
-const REDIRECT_URI = "https://robin-pwa.vercel.app/api/google-auth-callback";
+// The public host the user hit (e.g. robin-pwa.vercel.app or robin-staging.vercel.app).
+// On Vercel, x-forwarded-host carries the alias; fall back to host.
+function redirectUri(req) {
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `https://${host}/api/google-auth-callback`;
+}
+
 const SCOPE = [
   "openid",
   "email",
@@ -34,7 +42,7 @@ export default function handler(req, res) {
 
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri(req),
     response_type: "code",
     scope: SCOPE,
     access_type: "offline",   // get a refresh_token
